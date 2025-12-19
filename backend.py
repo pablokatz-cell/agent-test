@@ -31,10 +31,9 @@ class MedicalCongressAgent:
 
     def _generate_smart_queries(self, user_query):
         """
-        Uses Gemini to brainstorm 3 distinct, high-quality search queries.
+        Uses Gemini 3 to brainstorm 3 distinct, high-quality search queries.
         """
         if "PASTE" in self.API_KEY:
-            # Fallback if no key: just return the simple query
             return [f'"{user_query}" medical conference abstract']
 
         prompt = f"""
@@ -50,30 +49,37 @@ class MedicalCongressAgent:
         """
         
         try:
-            model = genai.GenerativeModel('gemini-1.5-pro')
+            # UPGRADED TO GEMINI 3 PRO
+            # Note: We use the 'preview' tag as it often provides the earliest access to the newest weights
+            model = genai.GenerativeModel('gemini-3-pro-preview')
             response = model.generate_content(prompt)
             queries = [q.strip() for q in response.text.split('\n') if q.strip()]
-            return queries[:3] # Ensure we only get 3
-        except:
-            return [f'"{user_query}" conference abstract']
+            return queries[:3]
+        except Exception as e:
+            print(f"Gemini 3 Query Gen Error: {e}")
+            # Fallback to older model if 3 isn't available in your region yet
+            try:
+                model = genai.GenerativeModel('gemini-1.5-pro')
+                response = model.generate_content(prompt)
+                queries = [q.strip() for q in response.text.split('\n') if q.strip()]
+                return queries[:3]
+            except:
+                return [f'"{user_query}" conference abstract']
 
     def search_congresses(self, user_query, max_results=10):
         if not user_query or not user_query.strip(): return []
 
-        # 1. Ask Gemini for the best Search Strategy
-        print(f"🧠 Asking Gemini to brainstorm search queries for: {user_query}")
+        print(f"🧠 Asking Gemini 3 to brainstorm search queries for: {user_query}")
         smart_queries = self._generate_smart_queries(user_query)
         print(f"🔍 Gemini suggested: {smart_queries}")
 
         all_results = []
         seen_urls = set()
 
-        # 2. Run EACH generated query
-        # We divide max_results by the number of queries to keep total count reasonable
+        # Dynamic limit based on number of queries
         limit_per_query = max(3, int(max_results / len(smart_queries)) + 2)
 
         for q in smart_queries:
-            # Add anti-spam filters to Gemini's queries just in case
             final_q = f"{q} -chatgpt -openai -github"
             
             try:
@@ -83,7 +89,6 @@ class MedicalCongressAgent:
                     link = res['href']
                     domain = urlparse(link).netloc.lower()
                     
-                    # Deduplicate and Filter
                     if link in seen_urls: continue
                     if any(bad in domain for bad in self.excluded_domains): continue
                     
@@ -94,7 +99,6 @@ class MedicalCongressAgent:
                 print(f"Search Error on query '{q}': {e}")
                 continue
         
-        # Limit to user's max requested
         return all_results[:max_results]
 
     def extract_abstract(self, url, user_query):
@@ -145,8 +149,6 @@ class MedicalCongressAgent:
             reader = PdfReader(f)
             extracted_text = []
             
-            # Read first 5 pages (Abstract books usually have index at start)
-            # plus pages that match the keyword
             for i, page in enumerate(reader.pages):
                 text = page.extract_text() or ""
                 if i < 3 or user_query.lower().split()[0] in text.lower():
@@ -159,22 +161,21 @@ class MedicalCongressAgent:
     def _analyze_with_gemini(self, text, user_query):
         if not text: return {"content": "No content."}
         
-        # Validations
         if user_query.lower().split()[0] not in text.lower():
              return {"error": f"Term '{user_query}' not found in document."}
 
-        input_text = text[:30000] 
+        input_text = text[:35000] # Gemini 3 handles even larger contexts easily
 
         prompt = f"""
         You are a Medical Research Assistant. 
-        Your task is to identify if the following document contains a conference abstract related to: "{user_query}".
+        Identify if the following document contains a conference abstract related to: "{user_query}".
         
         DOCUMENT TEXT:
         {input_text}
         
         INSTRUCTIONS:
-        1. If NO relevant abstract is found, simply output "Not relevant".
-        2. If YES, extract the Title of the abstract/talk.
+        1. If NO relevant abstract is found, output "Not relevant".
+        2. If YES, extract the Title.
         3. Write a 3-bullet summary of the clinical findings or study design.
         
         FORMAT:
@@ -186,9 +187,16 @@ class MedicalCongressAgent:
         """
 
         try:
-            model = genai.GenerativeModel('gemini-1.5-pro')
+            # UPGRADED TO GEMINI 3 PRO
+            model = genai.GenerativeModel('gemini-3-pro-preview')
             response = model.generate_content(prompt)
             return {"content": response.text}
 
         except Exception as e:
-            return {"content": f"Gemini Error: {e}"}
+            # Fallback to 1.5 Pro if 3 fails (e.g., API tier limits)
+            try:
+                model = genai.GenerativeModel('gemini-1.5-pro')
+                response = model.generate_content(prompt)
+                return {"content": response.text}
+            except Exception as e2:
+                return {"content": f"Gemini Error: {e2}"}

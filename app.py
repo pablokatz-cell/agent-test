@@ -1,15 +1,15 @@
 import streamlit as st
 from backend import MedicalCongressAgent
 
-st.set_page_config(page_title="Gemini Congress Scout", page_icon="✨", layout="wide")
+st.set_page_config(page_title="Gemini 3 Scout", page_icon="⚡", layout="wide")
 
 with st.sidebar:
-    st.title("✨ Gemini Scout")
+    st.title("⚡ Gemini 3 Scout")
     st.markdown("### Settings")
-    max_results = st.slider("Max Sites to Analyze", 5, 50, 10)
+    max_results = st.slider("Max Sites to Analyze", 5, 100, 10)
 
-st.header("Medical Conference Abstract Finder (Gemini Pro)")
-st.markdown("> **Powered by Google Gemini 1.5 Pro** | Now using AI for **Search Strategy** & **Analysis**.")
+st.header("Medical Conference Abstract Finder (Gemini 3 Pro)")
+st.markdown("> **Powered by Google Gemini 3 Pro** | The smartest reasoning model for complex medical analysis.")
 
 search_query = st.text_input("Search Topic", placeholder="e.g. Paroxysmal Nocturnal Hemoglobinuria or PNH")
 
@@ -20,13 +20,12 @@ if st.button("🚀 Find & Analyze"):
 
     agent = MedicalCongressAgent()
     if "PASTE_YOUR" in agent.API_KEY:
-        st.error("🚨 Missing API Key in backend.py!")
+        st.error("🚨 Missing API Key! Check backend.py")
         st.stop()
     
-    with st.status(f"✨ Brainstorming search strategy for '{search_query}'...", expanded=True) as status:
+    with st.status(f"⚡ Gemini 3 is strategizing for '{search_query}'...", expanded=True) as status:
         
-        # 1. Search (Now powered by Gemini)
-        st.write("🧠 Asking Gemini to generate expert search queries...")
+        st.write("🧠 Brainstorming search queries...")
         results = agent.search_congresses(search_query, max_results)
         
         if not results:
@@ -34,9 +33,8 @@ if st.button("🚀 Find & Analyze"):
             status.update(label="Failed", state="error")
             st.stop()
             
-        st.write(f"✅ Found {len(results)} potential sites. Analyzing content...")
+        st.write(f"✅ Found {len(results)} sites. analyzing...")
         
-        # 2. Analyze
         found_abstracts = []
         progress_bar = st.progress(0)
         
@@ -58,10 +56,10 @@ if st.button("🚀 Find & Analyze"):
 
     st.divider()
     if found_abstracts:
-        st.success(f"Gemini found {len(found_abstracts)} relevant abstracts.")
+        st.success(f"Gemini 3 found {len(found_abstracts)} relevant abstracts.")
         for item in found_abstracts:
             with st.expander(f"📄 {item['title']}", expanded=True):
                 st.caption(f"Source: {item['url']}")
                 st.markdown(item['summary'])
     else:
-        st.warning("Gemini read the sites but didn't find relevant abstracts.")
+        st.warning("No relevant abstracts found.")
