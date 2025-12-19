@@ -1,4 +1,5 @@
 import io
+import time
 import requests
 import trafilatura
 from bs4 import BeautifulSoup
@@ -6,16 +7,17 @@ from pypdf import PdfReader
 from duckduckgo_search import DDGS
 from urllib.parse import urlparse
 import google.generativeai as genai
+import streamlit as st
 
 class MedicalCongressAgent:
     def __init__(self):
-        # --- 🔑 API KEY CONFIGURATION ---
-        # PASTE YOUR KEY INSIDE THE QUOTES BELOW
-        self.API_KEY = "PASTE_YOUR_GOOGLE_API_KEY_HERE"
+        # --- SECURE API KEY HANDLING ---
+        try:
+            self.API_KEY = st.secrets["GOOGLE_API_KEY"]
+        except:
+            self.API_KEY = "PASTE_YOUR_GOOGLE_API_KEY_HERE"
         
-        if self.API_KEY == "PASTE_YOUR_GOOGLE_API_KEY_HERE":
-            print("⚠️ WARNING: No API Key found. Please paste it in backend.py line 14.")
-        else:
+        if "PASTE" not in self.API_KEY and self.API_KEY:
             genai.configure(api_key=self.API_KEY)
             
         self.ddgs = DDGS()
@@ -27,45 +29,73 @@ class MedicalCongressAgent:
             "github.com", "facebook.com", "twitter.com"
         ]
 
-    def _generate_acronym(self, phrase):
-        ignore = {'of', 'and', 'the', 'for', 'in', 'with'}
-        words = [w for w in phrase.split() if w.lower() not in ignore]
-        if len(words) < 2: return None
-        return "".join([w[0].upper() for w in words])
+    def _generate_smart_queries(self, user_query):
+        """
+        Uses Gemini to brainstorm 3 distinct, high-quality search queries.
+        """
+        if "PASTE" in self.API_KEY:
+            # Fallback if no key: just return the simple query
+            return [f'"{user_query}" medical conference abstract']
 
-    def search_congresses(self, user_query, max_results=5):
-        if not user_query or not user_query.strip(): return []
-
-        acronym = self._generate_acronym(user_query)
-        main_term = f'("{user_query}" OR "{acronym}")' if acronym else f'("{user_query}")'
-
-        # STRICT CONTEXT: Medical Conferences Only
-        context_terms = '("medical conference" OR "scientific congress" OR "annual meeting" OR "clinical symposium")'
-        anti_spam = '-chatgpt -openai -github -python -code'
+        prompt = f"""
+        You are an expert Medical Librarian. 
+        I need to find conference abstracts, posters, or scientific programs for the topic: "{user_query}".
         
-        final_query = f'{main_term} {context_terms} {anti_spam}'
-        print(f"Agent Query: {final_query}")
+        Generate 3 specific, distinct search queries to find these on the open web.
+        - Query 1: Direct phrase match + conference terms.
+        - Query 2: Broader therapeutic area or synonyms + "Abstract Book".
+        - Query 3: Specific file types (PDF) or acronyms.
+        
+        Output ONLY the 3 queries, one per line. No numbering, no bullets.
+        """
         
         try:
-            # Fetch 10x results to filter effectively
-            raw_results = list(self.ddgs.text(final_query, max_results=max_results * 10))
+            model = genai.GenerativeModel('gemini-1.5-pro')
+            response = model.generate_content(prompt)
+            queries = [q.strip() for q in response.text.split('\n') if q.strip()]
+            return queries[:3] # Ensure we only get 3
+        except:
+            return [f'"{user_query}" conference abstract']
+
+    def search_congresses(self, user_query, max_results=10):
+        if not user_query or not user_query.strip(): return []
+
+        # 1. Ask Gemini for the best Search Strategy
+        print(f"🧠 Asking Gemini to brainstorm search queries for: {user_query}")
+        smart_queries = self._generate_smart_queries(user_query)
+        print(f"🔍 Gemini suggested: {smart_queries}")
+
+        all_results = []
+        seen_urls = set()
+
+        # 2. Run EACH generated query
+        # We divide max_results by the number of queries to keep total count reasonable
+        limit_per_query = max(3, int(max_results / len(smart_queries)) + 2)
+
+        for q in smart_queries:
+            # Add anti-spam filters to Gemini's queries just in case
+            final_q = f"{q} -chatgpt -openai -github"
             
-            clean_results = []
-            for res in raw_results:
-                link = res['href']
-                title = res['title'].lower()
-                domain = urlparse(link).netloc.lower()
+            try:
+                results = list(self.ddgs.text(final_q, max_results=limit_per_query))
                 
-                if any(bad in domain for bad in self.excluded_domains): continue
-                if any(x in title for x in ['chatgpt', 'openai', 'github', 'code']): continue
-                
-                clean_results.append(res)
-                if len(clean_results) >= max_results: break
-            
-            return clean_results
-        except Exception as e:
-            print(f"Search Error: {e}")
-            return []
+                for res in results:
+                    link = res['href']
+                    domain = urlparse(link).netloc.lower()
+                    
+                    # Deduplicate and Filter
+                    if link in seen_urls: continue
+                    if any(bad in domain for bad in self.excluded_domains): continue
+                    
+                    seen_urls.add(link)
+                    all_results.append(res)
+                    
+            except Exception as e:
+                print(f"Search Error on query '{q}': {e}")
+                continue
+        
+        # Limit to user's max requested
+        return all_results[:max_results]
 
     def extract_abstract(self, url, user_query):
         try:
@@ -75,18 +105,15 @@ class MedicalCongressAgent:
                 content_type = head.headers.get('Content-Type', '').lower()
             except: content_type = ""
 
-            # 1. Handle PDF
             if 'application/pdf' in content_type or url.lower().endswith('.pdf'):
                 raw_text = self._process_pdf_url(url, user_query)
                 return self._analyze_with_gemini(raw_text, user_query)
 
-            # 2. Handle HTML
             downloaded = trafilatura.fetch_url(url)
             if not downloaded: return {"error": "Connection Failed"}
             
             page_text = trafilatura.extract(downloaded) or ""
             
-            # If text is short, look for PDF links
             if len(page_text) < 1000:
                 pdf_text = self._hunt_for_pdf_links(downloaded, url, user_query)
                 if pdf_text: page_text += "\n\n" + pdf_text
@@ -118,10 +145,11 @@ class MedicalCongressAgent:
             reader = PdfReader(f)
             extracted_text = []
             
+            # Read first 5 pages (Abstract books usually have index at start)
+            # plus pages that match the keyword
             for i, page in enumerate(reader.pages):
                 text = page.extract_text() or ""
-                # Scan first 2 pages + any page with keyword
-                if i < 2 or user_query.lower() in text.lower():
+                if i < 3 or user_query.lower().split()[0] in text.lower():
                     extracted_text.append(text)
                 if len(extracted_text) >= 15: break 
             
@@ -129,16 +157,12 @@ class MedicalCongressAgent:
         except: return ""
 
     def _analyze_with_gemini(self, text, user_query):
-        """
-        Sends text to Google Gemini 1.5 Pro for analysis.
-        """
         if not text: return {"content": "No content."}
         
-        # Keyword validation to save tokens
-        if user_query.lower() not in text.lower():
+        # Validations
+        if user_query.lower().split()[0] not in text.lower():
              return {"error": f"Term '{user_query}' not found in document."}
 
-        # Gemini Pro has a huge context window, so we can send more text (up to 30k chars here)
         input_text = text[:30000] 
 
         prompt = f"""
@@ -162,7 +186,6 @@ class MedicalCongressAgent:
         """
 
         try:
-            # Initialize Model
             model = genai.GenerativeModel('gemini-1.5-pro')
             response = model.generate_content(prompt)
             return {"content": response.text}
