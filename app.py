@@ -1,60 +1,81 @@
 import streamlit as st
 from backend import MedicalCongressAgent
 
-st.set_page_config(page_title="Gemini 3 Research Scout", page_icon="🛸", layout="wide")
-st.markdown("""<style>.reportview-container { margin-top: -2em; } #MainMenu {visibility: hidden;} footer {visibility: hidden;}</style>""", unsafe_allow_html=True)
+st.set_page_config(page_title="Gemini Congress Scout", page_icon="✨", layout="wide")
 
+# --- SIDEBAR ---
 with st.sidebar:
-    st.title("🛸 Gemini 3 Scout")
-    st.info("Attempting to use next-gen Gemini models. Auto-fallback enabled.")
-    api_key = st.text_input("Google API Key", type="password")
-    max_results = st.slider("Max Sites", 2, 10, 4)
+    st.title("✨ Gemini Scout")
+    st.markdown("### Settings")
+    # UPDATED: Slider expanded to 100
+    max_results = st.slider("Max Sites to Analyze", min_value=5, max_value=100, value=10)
+    st.caption("Scanning 100 sites may take 2-3 minutes.")
 
-st.header("Medical Conference Abstract Finder")
-col1, col2 = st.columns(2)
-with col1: ther_area = st.text_input("Therapeutic Area", value="Oncology")
-with col2: disease = st.text_input("Disease / Indication", value="NSCLC")
-keywords = st.text_input("Specific Keywords", placeholder="e.g. 'Phase 3' OR 'Overall Survival'")
+# --- MAIN INTERFACE ---
+st.header("Medical Conference Abstract Finder (Gemini Pro)")
+st.markdown("""
+> **Powered by Google Gemini 1.5 Pro**
+> Fast, accurate, and capable of reading long documents.
+""")
 
-if st.button("🚀 Find Conference Abstracts"):
-    if not api_key:
-        st.error("Google API Key required.")
+# Search Input
+search_query = st.text_input("Search Topic", placeholder="e.g. Paroxysmal Nocturnal Hemoglobinuria or PNH")
+
+if st.button("🚀 Find & Analyze"):
+    if not search_query:
+        st.warning("Please enter a search topic.")
         st.stop()
+
+    agent = MedicalCongressAgent()
+    
+    # Check if user added the key
+    if "PASTE_YOUR" in agent.API_KEY:
+        st.error("🚨 Missing API Key! Please open `backend.py` and paste your Google API Key in line 14.")
+        st.stop()
+    
+    with st.status(f"✨ Gemini is scanning for '{search_query}'...", expanded=True) as status:
         
-    agent = MedicalCongressAgent(api_key)
-    
-    # Display which model is actually being used
-    st.toast(f"Brain active: {agent.model_name}", icon="🧠")
-    
-    with st.status(f"🔍 Searching events with {agent.model_name}...", expanded=True) as status:
-        results = agent.search_congresses(ther_area, disease, keywords, max_results)
+        # 1. Search
+        st.write(f"📡 Deep scanning the web for up to {max_results} sites...")
+        results = agent.search_congresses(search_query, max_results)
         
         if not results:
-            st.error("No sites found.")
+            st.error("No relevant conference sites found.")
+            status.update(label="Failed", state="error")
             st.stop()
             
-        st.write(f"Found {len(results)} sites. Analyzing...")
-        found_abstracts = []
+        st.write(f"Found {len(results)} potential sites. Sending to Gemini...")
         
-        for site in results:
-            st.write(f"Reading: {site['title']}")
-            data = agent.extract_abstract(site['href'], disease, ther_area)
+        # 2. Analyze
+        found_abstracts = []
+        progress_bar = st.progress(0)
+        
+        for idx, site in enumerate(results):
+            # Update progress bar
+            progress_bar.progress((idx + 1) / len(results))
+            st.write(f"Reading: {site['title']}...")
+            
+            # Extract & Analyze
+            data = agent.extract_abstract(site['href'], search_query)
             content = data.get("content", "")
             
-            if "INVALID SOURCE" in content:
-                st.warning(f"Skipped {site['title']}: Not a conference.")
-            elif data.get("error"):
-                st.write(f"⚠️ Error: {data['error']}")
-            else:
-                found_abstracts.append({"title": site['title'], "url": site['href'], "text": content})
+            # Filter valid results
+            if "Not relevant" not in content and "No content" not in content and not data.get("error"):
+                found_abstracts.append({
+                    "title": site['title'], 
+                    "url": site['href'], 
+                    "summary": content
+                })
         
         status.update(label="Done!", state="complete", expanded=False)
 
+    # 3. Display
     st.divider()
     if found_abstracts:
+        st.success(f"Gemini found {len(found_abstracts)} relevant abstracts.")
         for item in found_abstracts:
             with st.expander(f"📄 {item['title']}", expanded=True):
                 st.caption(f"Source: {item['url']}")
-                st.markdown(item['text'])
+                st.markdown(item['summary'])
     else:
-        st.warning("No relevant abstracts found.")
+        st.warning("Gemini read the sites but didn't find relevant abstracts.")

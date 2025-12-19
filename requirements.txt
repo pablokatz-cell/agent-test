@@ -1,7 +1,7 @@
 streamlit
 duckduckgo-search
 trafilatura
-google-generativeai
 requests
 beautifulsoup4
 pypdf
+google-generativeai
