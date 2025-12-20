@@ -4,4 +4,4 @@ trafilatura
 requests
 beautifulsoup4
 pypdf
-google-generativeai
+google-generativeai>=0.8.0
