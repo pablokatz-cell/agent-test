@@ -8,15 +8,6 @@ agent = MedicalCongressAgent()
 # --- SIDEBAR ---
 with st.sidebar:
     st.title("⚡ Settings")
-    
-    st.markdown("### 🤖 Target Strategy")
-    st.info(
-        "**AI Auto-Discovery Active**\n\n"
-        "Instead of a fixed list, Gemini 3 now identifies the top 5 specialist societies "
-        "for your specific topic (e.g., 'Glaucoma' → AAO, ARVO, EGS) automatically."
-    )
-
-    st.divider()
 
     # Date Filter
     st.markdown("### 📅 Date Filter")
