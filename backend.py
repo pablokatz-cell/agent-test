@@ -6,7 +6,7 @@ from pypdf import PdfReader
 from duckduckgo_search import DDGS
 from urllib.parse import urlparse
 import streamlit as st
-from openai import OpenAI  # We use the OpenAI client to connect to the Gateway
+from openai import OpenAI
 
 class MedicalCongressAgent:
     def __init__(self):
@@ -16,86 +16,137 @@ class MedicalCongressAgent:
         except:
             self.PORTKEY_KEY = "PASTE_YOUR_ROCHE_KEY_HERE"
 
-        # Initialize Client pointing to Roche's Internal Gateway
         if "PASTE" not in self.PORTKEY_KEY:
             self.client = OpenAI(
                 api_key=self.PORTKEY_KEY,
-                base_url="https://eu.aigw.galileo.roche.com/v1" 
+                base_url="https://eu.aigw.galileo.roche.com/v1",
+                timeout=300.0
             )
         else:
             self.client = None
 
         self.ddgs = DDGS()
-        self.excluded_domains = [
-            "pubmed.ncbi.nlm.nih.gov", "embase.com", "clinicaltrials.gov",
-            "cochranelibrary.com", "sciencedirect.com", "researchgate.net",
-            "wiley.com", "springer.com", "nejm.org", "thelancet.com",
-            "googleapis.com", "google.com", "wikipedia.org", "youtube.com",
-            "github.com", "facebook.com", "twitter.com"
+        
+        # 1. THE "NUCLEAR" BLACKLIST (Generic Consumer Sites)
+        self.banned_domains = [
+            # Consumer Health
+            "mayoclinic.org", "webmd.com", "clevelandclinic.org", "healthline.com",
+            "medicalnewstoday.com", "drugs.com", "medscape.com", "verywellhealth.com",
+            "hopkinsmedicine.org", "nhs.uk", "cdc.gov", "who.int", "everydayhealth.com",
+            "medlineplus.gov", "patient.info", "upmc.com", "uclahealth.org",
+            # General Science/News (often too generic)
+            "sciencedaily.com", "wikipedia.org", "nytimes.com", "forbes.com",
+            "statnews.com", "nature.com", "sciencemag.org", "frontiersin.org",
+            # Social / Tech
+            "youtube.com", "facebook.com", "linkedin.com", "twitter.com", 
+            "reddit.com", "quora.com", "github.com", "pinterest.com"
         ]
 
     def _get_dynamic_societies(self, user_query):
-        """Asks AI to identify top 5 medical societies."""
         if not self.client: return []
-
-        prompt = f"Identify the 5 most important medical societies for: '{user_query}'. Return ONLY domain names."
+        # Prompt tweaked to ask for CONGRESS sites specifically
+        prompt = f"Identify the 5 most important medical societies that hold annual congresses for: '{user_query}'. Return ONLY domain names."
         try:
-            # Using the specific Roche Model Name
             response = self.client.chat.completions.create(
                 model="gemini-2.5-pro", 
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
-                stream=False # We disable streaming for the agent logic
+                stream=False
             )
             text = response.choices[0].message.content
             return [d.strip() for d in text.split('\n') if '.' in d][:5]
-        except Exception as e:
-            print(f"Gateway Error: {e}")
-            return []
+        except: return []
 
-    # ... (Keep existing _generate_smart_queries) ...
     def _generate_smart_queries(self, user_query, dynamic_sites):
-        site_operator = ""
-        if dynamic_sites:
-            site_operator = " (" + " OR ".join([f"site:{d}" for d in dynamic_sites]) + ")"
-        return [
-            f'"{user_query}" conference abstract{site_operator}',
-            f'"{user_query}" scientific program{site_operator}',
-            f'"{user_query}" annual meeting abstract{site_operator}'
+        # 2. STRICTER QUERIES
+        # We explicitly ask for "abstracts" and "posters"
+        base_terms = [
+            f'"{user_query}" conference abstract',
+            f'"{user_query}" poster session pdf',
+            f'"{user_query}" annual meeting proceedings',
+            f'"{user_query}" scientific session'
         ]
+        
+        final_queries = []
+        # If we have targeted societies, search ONLY inside them first
+        if dynamic_sites:
+            site_str = " OR ".join([f"site:{d}" for d in dynamic_sites])
+            final_queries.append(f'"{user_query}" ({site_str}) abstract')
+            final_queries.append(f'"{user_query}" ({site_str}) meeting')
+        
+        # Add the general queries as backup
+        final_queries.extend(base_terms)
+        return final_queries
 
-    # ... (Keep existing search_congresses) ...
+    def _is_scientific_source(self, url):
+        """
+        The Gatekeeper: Returns True if the URL looks like a conference/paper.
+        Returns False if it looks like a generic blog or health page.
+        """
+        u = url.lower()
+        
+        # A. Block explicit blacklisted domains
+        domain = urlparse(u).netloc
+        if any(ban in domain for ban in self.banned_domains):
+            return False
+
+        # B. Green Flags (Strong signs of a paper/abstract)
+        green_flags = [
+            ".pdf", "/abstract", "/poster", "/meeting", "/congress", 
+            "/2023", "/2024", "/2025", "/proceedings", "/files/", 
+            "/downloads/", "doi.org"
+        ]
+        if any(flag in u for flag in green_flags):
+            return True
+
+        # C. Red Flags (Strong signs of generic content)
+        red_flags = [
+            "/health-library/", "/diseases-conditions/", "/symptoms-causes/", 
+            "/blog/", "/news/", "/press-release/", "/patient-care/",
+            "/about-us/", "/contact/"
+        ]
+        if any(flag in u for flag in red_flags):
+            return False
+
+        # Default: If unsure, let it pass but it might be filtered later by content analysis
+        return True
+
     def search_congresses(self, user_query, max_results=10, time_limit=None):
         if not user_query: return []
         
-        # 1. Dynamic Discovery
-        print(f"🧠 Gateway identifying societies for '{user_query}'...")
+        print(f"🧠 Identifying societies for '{user_query}'...")
         dynamic_sites = self._get_dynamic_societies(user_query)
-
-        # 2. Generate Queries
         smart_queries = self._generate_smart_queries(user_query, dynamic_sites)
 
         all_results = []
         seen_urls = set()
-        limit_per_query = max(3, int(max_results / len(smart_queries)) + 2)
+        
+        # We search a bit more to allow for heavy filtering
+        limit_per_query = max(3, int(max_results / len(smart_queries)) + 3)
 
         for q in smart_queries:
-            final_q = f"{q} -chatgpt -github"
+            # Force DuckDuckGo to remove generic sites at search level too
+            final_q = f"{q} -mayoclinic -webmd -wikipedia"
             try:
                 results = list(self.ddgs.text(final_q, max_results=limit_per_query, timelimit=time_limit))
                 for res in results:
                     link = res['href']
-                    domain = urlparse(link).netloc.lower()
-                    if link in seen_urls: continue
-                    if any(bad in domain for bad in self.excluded_domains): continue
                     
+                    if link in seen_urls: continue
                     seen_urls.add(link)
-                    all_results.append(res)
+
+                    # 3. APPLY THE GATEKEEPER CHECK
+                    if self._is_scientific_source(link):
+                        all_results.append(res)
+                    else:
+                        print(f"Skipped generic/consumer link: {link}")
+                        
             except: continue
+            
         return all_results[:max_results]
 
-    # ... (Keep existing extract_abstract, _hunt_for_pdf_links, _process_pdf_url) ...
     def extract_abstract(self, url, user_query):
+        # ... (Same extraction code as before) ...
         try:
             headers = {'User-Agent': 'Mozilla/5.0'}
             try:
@@ -122,6 +173,7 @@ class MedicalCongressAgent:
             return {"error": str(e)}
 
     def _hunt_for_pdf_links(self, html_content, base_url, user_query):
+        # ... (Same helper) ...
         if not html_content: return ""
         soup = BeautifulSoup(html_content, 'html.parser')
         for link in soup.find_all('a', href=True):
@@ -134,6 +186,7 @@ class MedicalCongressAgent:
         return ""
 
     def _process_pdf_url(self, pdf_url, user_query):
+        # ... (Same helper) ...
         try:
             headers = {'User-Agent': 'Mozilla/5.0'}
             response = requests.get(pdf_url, headers=headers, timeout=15)
@@ -149,6 +202,7 @@ class MedicalCongressAgent:
         except: return ""
 
     def _analyze_with_gateway(self, text, user_query):
+        # ... (Same helper with Timeout) ...
         if not text: return {"content": "No content."}
         if user_query.lower().split()[0] not in text.lower():
              return {"error": f"Term '{user_query}' not found."}
@@ -157,23 +211,30 @@ class MedicalCongressAgent:
         
         system_prompt = "You are a Medical Research Assistant. Extract conference abstracts."
         user_prompt = f"""
-        Identify if this document contains a conference abstract related to: "{user_query}".
-        DOCUMENT TEXT: {input_text}
+        Identify if this document contains a conference abstract or poster related to: "{user_query}".
+        
+        DOCUMENT TEXT:
+        {input_text}
+        
         INSTRUCTIONS:
         1. If NO relevant abstract is found, output "Not relevant".
         2. If YES, extract Title and 3-bullet summary.
-        FORMAT: **Title:** [Title]\n**Summary:**\n- [Point 1]
+        
+        FORMAT:
+        **Title:** [Title]
+        **Summary:**
+        - [Point 1]
         """
 
         try:
-            # CONNECTING TO ROCHE GATEWAY
             response = self.client.chat.completions.create(
-                model="gemini-2.5-pro", # Use the internal model name
+                model="gemini-2.5-pro",
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                stream=False
+                stream=False,
+                timeout=300.0
             )
             return {"content": response.choices[0].message.content}
         except Exception as e:
