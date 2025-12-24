@@ -8,7 +8,7 @@ agent = MedicalCongressAgent()
 # --- SIDEBAR ---
 with st.sidebar:
     st.title("⚡ Settings")
-
+    
     # Date Filter
     st.markdown("### 📅 Date Filter")
     time_filter = st.radio(
@@ -20,10 +20,12 @@ with st.sidebar:
     selected_time = time_map[time_filter]
 
     st.divider()
+    
+    # Max Sites Slider
     max_results = st.slider("Max Sites", 5, 50, 10)
 
 # --- MAIN INTERFACE ---
-st.header("Medical Conference Abstract Finder (Gemini 3)")
+st.header("Medical Conference Abstract Finder (Roche Gateway)")
 st.markdown("> **Advanced Mode:** AI automatically targets the most relevant specialist societies for your topic.")
 
 search_query = st.text_input("Search Topic", placeholder="e.g. Multiple Sclerosis")
@@ -33,8 +35,10 @@ if st.button("🚀 Find & Analyze"):
         st.warning("Please enter a topic.")
         st.stop()
     
-    if "PASTE_YOUR" in agent.API_KEY:
-        st.error("🚨 Missing API Key in backend.py")
+    # --- UPDATED KEY CHECK ---
+    # We now check for PORTKEY_KEY, not API_KEY
+    if "PASTE" in agent.PORTKEY_KEY:
+        st.error("🚨 Missing Roche Portkey Key in backend.py or Secrets.")
         st.stop()
 
     with st.status(f"⚡ Scouting for '{search_query}'...", expanded=True) as status:
@@ -42,7 +46,6 @@ if st.button("🚀 Find & Analyze"):
         # SEARCH STEP
         st.write("🧠 Generative AI is identifying top specialist societies...")
         
-        # We removed 'selected_societies' because AI handles it internally now
         results = agent.search_congresses(
             search_query, 
             max_results=max_results,
