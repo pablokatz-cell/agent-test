@@ -1,27 +1,31 @@
 import io
-import time
 import requests
 import trafilatura
 from bs4 import BeautifulSoup
 from pypdf import PdfReader
 from duckduckgo_search import DDGS
 from urllib.parse import urlparse
-import google.generativeai as genai
 import streamlit as st
+from openai import OpenAI  # We use the OpenAI client to connect to the Gateway
 
 class MedicalCongressAgent:
     def __init__(self):
+        # --- ROCHE GATEWAY CONFIGURATION ---
         try:
-            self.API_KEY = st.secrets["GOOGLE_API_KEY"]
+            self.PORTKEY_KEY = st.secrets["PORTKEY_API_KEY"]
         except:
-            self.API_KEY = "PASTE_YOUR_GOOGLE_API_KEY_HERE"
-        
-        if "PASTE" not in self.API_KEY and self.API_KEY:
-            genai.configure(api_key=self.API_KEY)
-            
+            self.PORTKEY_KEY = "PASTE_YOUR_ROCHE_KEY_HERE"
+
+        # Initialize Client pointing to Roche's Internal Gateway
+        if "PASTE" not in self.PORTKEY_KEY:
+            self.client = OpenAI(
+                api_key=self.PORTKEY_KEY,
+                base_url="https://eu.aigw.galileo.roche.com/v1" 
+            )
+        else:
+            self.client = None
+
         self.ddgs = DDGS()
-        
-        # We keep the blacklist to avoid spam
         self.excluded_domains = [
             "pubmed.ncbi.nlm.nih.gov", "embase.com", "clinicaltrials.gov",
             "cochranelibrary.com", "sciencedirect.com", "researchgate.net",
@@ -31,58 +35,42 @@ class MedicalCongressAgent:
         ]
 
     def _get_dynamic_societies(self, user_query):
-        """
-        Asks Gemini to identify the top 5 relevant medical societies 
-        for the specific disease/topic provided.
-        """
-        if "PASTE" in self.API_KEY: return []
+        """Asks AI to identify top 5 medical societies."""
+        if not self.client: return []
 
-        prompt = f"""
-        You are a Medical Librarian. The user is researching: "{user_query}".
-        Identify the 5 most important medical societies or congresses for this SPECIFIC topic.
-        
-        Return ONLY their official domain names (e.g., 'hematology.org', 'asco.org').
-        Output format: just the domains, one per line. No bullets.
-        """
+        prompt = f"Identify the 5 most important medical societies for: '{user_query}'. Return ONLY domain names."
         try:
-            # Using Gemini 3 Pro (or 1.5 Pro) to find the best sites
-            model = genai.GenerativeModel('gemini-3-pro-preview')
-            response = model.generate_content(prompt)
-            domains = [d.strip() for d in response.text.split('\n') if '.' in d]
-            return domains[:5] # Limit to top 5 to keep search fast
-        except:
+            # Using the specific Roche Model Name
+            response = self.client.chat.completions.create(
+                model="gemini-2.5-pro", 
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                stream=False # We disable streaming for the agent logic
+            )
+            text = response.choices[0].message.content
+            return [d.strip() for d in text.split('\n') if '.' in d][:5]
+        except Exception as e:
+            print(f"Gateway Error: {e}")
             return []
 
+    # ... (Keep existing _generate_smart_queries) ...
     def _generate_smart_queries(self, user_query, dynamic_sites):
-        """
-        Generates search queries that include the AI-discovered sites.
-        """
         site_operator = ""
         if dynamic_sites:
-            # Create a string like: (site:aao.org OR site:arvo.org)
             site_operator = " (" + " OR ".join([f"site:{d}" for d in dynamic_sites]) + ")"
-        
-        queries = [
+        return [
             f'"{user_query}" conference abstract{site_operator}',
             f'"{user_query}" scientific program{site_operator}',
             f'"{user_query}" annual meeting abstract{site_operator}'
         ]
-        return queries
 
-    def search_congresses(self, user_query, max_results=10, selected_societies=None, time_limit=None):
+    # ... (Keep existing search_congresses) ...
+    def search_congresses(self, user_query, max_results=10, time_limit=None):
         if not user_query: return []
-
-        # 1. AI DYNAMIC DISCOVERY
-        # If the user didn't pick manual societies, let AI find the best ones.
-        dynamic_sites = []
-        if not selected_societies:
-            print(f"🧠 AI is identifying specialist societies for '{user_query}'...")
-            dynamic_sites = self._get_dynamic_societies(user_query)
-            print(f"🎯 AI Targeted: {dynamic_sites}")
-        else:
-            # Use the manual selection from the sidebar
-            # (You'd need to map these names to URLs if using the manual list)
-            pass 
+        
+        # 1. Dynamic Discovery
+        print(f"🧠 Gateway identifying societies for '{user_query}'...")
+        dynamic_sites = self._get_dynamic_societies(user_query)
 
         # 2. Generate Queries
         smart_queries = self._generate_smart_queries(user_query, dynamic_sites)
@@ -92,28 +80,22 @@ class MedicalCongressAgent:
         limit_per_query = max(3, int(max_results / len(smart_queries)) + 2)
 
         for q in smart_queries:
-            # Add Anti-Spam
             final_q = f"{q} -chatgpt -github"
-            
             try:
                 results = list(self.ddgs.text(final_q, max_results=limit_per_query, timelimit=time_limit))
                 for res in results:
                     link = res['href']
                     domain = urlparse(link).netloc.lower()
-                    
                     if link in seen_urls: continue
                     if any(bad in domain for bad in self.excluded_domains): continue
                     
                     seen_urls.add(link)
                     all_results.append(res)
-            except Exception as e:
-                print(f"Search Error: {e}")
-                continue
-        
+            except: continue
         return all_results[:max_results]
 
+    # ... (Keep existing extract_abstract, _hunt_for_pdf_links, _process_pdf_url) ...
     def extract_abstract(self, url, user_query):
-        # ... (Keep your existing extraction code unchanged) ...
         try:
             headers = {'User-Agent': 'Mozilla/5.0'}
             try:
@@ -123,7 +105,7 @@ class MedicalCongressAgent:
 
             if 'application/pdf' in content_type or url.lower().endswith('.pdf'):
                 raw_text = self._process_pdf_url(url, user_query)
-                return self._analyze_with_gemini(raw_text, user_query)
+                return self._analyze_with_gateway(raw_text, user_query)
 
             downloaded = trafilatura.fetch_url(url)
             if not downloaded: return {"error": "Connection Failed"}
@@ -135,12 +117,11 @@ class MedicalCongressAgent:
 
             if not page_text.strip(): return {"error": "No text found."}
 
-            return self._analyze_with_gemini(page_text, user_query)
+            return self._analyze_with_gateway(page_text, user_query)
         except Exception as e:
             return {"error": str(e)}
 
     def _hunt_for_pdf_links(self, html_content, base_url, user_query):
-        # ... (Keep existing helper) ...
         if not html_content: return ""
         soup = BeautifulSoup(html_content, 'html.parser')
         for link in soup.find_all('a', href=True):
@@ -153,7 +134,6 @@ class MedicalCongressAgent:
         return ""
 
     def _process_pdf_url(self, pdf_url, user_query):
-        # ... (Keep existing helper) ...
         try:
             headers = {'User-Agent': 'Mozilla/5.0'}
             response = requests.get(pdf_url, headers=headers, timeout=15)
@@ -168,27 +148,33 @@ class MedicalCongressAgent:
             return "\n".join(extracted_text)
         except: return ""
 
-    def _analyze_with_gemini(self, text, user_query):
-        # ... (Keep existing helper) ...
+    def _analyze_with_gateway(self, text, user_query):
         if not text: return {"content": "No content."}
         if user_query.lower().split()[0] not in text.lower():
              return {"error": f"Term '{user_query}' not found."}
-        input_text = text[:35000]
-        prompt = f"""
+        
+        input_text = text[:30000]
+        
+        system_prompt = "You are a Medical Research Assistant. Extract conference abstracts."
+        user_prompt = f"""
         Identify if this document contains a conference abstract related to: "{user_query}".
         DOCUMENT TEXT: {input_text}
         INSTRUCTIONS:
         1. If NO relevant abstract is found, output "Not relevant".
         2. If YES, extract Title and 3-bullet summary.
-        FORMAT: **Title:** [Title]\n**Summary:**\n- [Point 1]...
+        FORMAT: **Title:** [Title]\n**Summary:**\n- [Point 1]
         """
+
         try:
-            model = genai.GenerativeModel('gemini-3-pro-preview')
-            response = model.generate_content(prompt)
-            return {"content": response.text}
-        except:
-             try:
-                model = genai.GenerativeModel('gemini-1.5-pro')
-                response = model.generate_content(prompt)
-                return {"content": response.text}
-             except Exception as e: return {"content": str(e)}
+            # CONNECTING TO ROCHE GATEWAY
+            response = self.client.chat.completions.create(
+                model="gemini-2.5-pro", # Use the internal model name
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                stream=False
+            )
+            return {"content": response.choices[0].message.content}
+        except Exception as e:
+            return {"content": f"Gateway Error: {e}"}
