@@ -5,3 +5,4 @@ trafilatura
 beautifulsoup4
 requests
 pypdf# force update 1
+# force update 1
