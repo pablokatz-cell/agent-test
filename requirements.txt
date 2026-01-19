@@ -1,8 +1,7 @@
 streamlit
+openai
 duckduckgo-search
 trafilatura
-requests
 beautifulsoup4
+requests
 pypdf
-openai
-portkey-ai
