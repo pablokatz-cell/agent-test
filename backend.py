@@ -24,114 +24,147 @@ class MedicalCongressAgent:
         self.MODEL_ID = "@org-gcp-general-us-central1/gemini-2.5-flash-lite"
         self.ddgs = DDGS()
 
-    # --- MODULE A: THE STRATEGIST ---
-    def module_a_strategist(self, disease_area):
-        return [
-            {"name": "AAIC (Alzheimer's Association International Conference)", "type": "High Impact"},
-            {"name": "AAN (American Academy of Neurology)", "type": "High Impact"},
-            {"name": "AD/PD (Intl Conf on Alzheimer's & Parkinson's)", "type": "Specialty"},
-            {"name": "CTAD (Clinical Trials on Alzheimer's)", "type": "Specialty"}
-        ]
+    # --- USER INPUT STEP (Predefined Congresses) ---
+    def get_predefined_congresses(self, disease_area):
+        """
+        Maps the user input to the 3 predefined congresses requested in the spec.
+        Includes specific search hints for the Navigator.
+        """
+        if "alzheimer" in disease_area.lower():
+            return [
+                {
+                    "name": "AAIC (Alzheimer's Association International Conference)", 
+                    "hint": "Alzheimer’s & Dementia Supplementary Issues Podium abstracts"
+                },
+                {
+                    "name": "AAN (American Academy of Neurology Annual Meeting)", 
+                    "hint": "Neurology Supplement Issues"
+                },
+                {
+                    "name": "CTAD (Clinical Trials on Alzheimer's Disease)", 
+                    "hint": "Journal of Prevention of Alzheimer’s Disease"
+                }
+            ]
+        # Fallback for other queries
+        return [{"name": f"{disease_area} Congress", "hint": "Scientific Program"}]
 
-    # --- MODULE B: THE NAVIGATOR ---
-    def module_b_navigator(self, congress_list):
+    # --- MODULE A: THE NAVIGATOR (Search & Location) ---
+    def module_a_navigator(self, congress_list):
         targeted_results = []
         
-        # DEMO BACKUPS: Real URLs to use if search fails
-        demo_urls = {
-            "AAIC": "https://alz.org/aaic/scientific-program.asp", # Likely to block, but we try
-            "CTAD": "https://www.ctad-alzheimer.com/files/files/CTAD2024_Abstracts.pdf", # Works great (PDF)
-            "AAN": "https://www.aan.com/events/annual-meeting", 
-            "AD/PD": "https://adpd.kenes.com/"
+        # TARGET URLs (From Validation Workflow Spec)
+        # We prioritize these URLs. If not found, we search.
+        known_targets = {
+            "AAIC": "https://alz.org/aaic/scientific-program.asp",
+            "CTAD": "https://www.ctad-alzheimer.com/files/files/CTAD2024_Abstracts.pdf", # PDF Detection Test
+            "AAN": "https://www.aan.com/events/annual-meeting"
         }
 
         for item in congress_list:
             congress = item["name"]
+            hint = item.get("hint", "")
             found_url = None
             
-            # 1. Try Real Search (Prioritize PDFs as they are rarely blocked)
-            try:
-                queries = [
-                    f'{congress} 2024 scientific program abstracts filetype:pdf',
-                    f'{congress} 2024 journal supplement',
-                    f'{congress} 2025 abstract archive'
-                ]
-                for q in queries:
-                    results = list(self.ddgs.text(q, max_results=2))
-                    for res in results:
-                        u = res['href'].lower()
-                        if any(x in u for x in ['pdf', 'program', 'abstract', 'supplement']):
-                            found_url = res
-                            break
-                    if found_url: break
-            except: pass
-
-            # 2. Use Demo Backup if search failed
-            if not found_url:
-                for key, url in demo_urls.items():
-                    if key in congress:
-                        found_url = {'title': f"{congress} (Demo Source)", 'href': url}
-                        break
+            # 1. Check Known Targets first
+            for key, url in known_targets.items():
+                if key in congress:
+                    found_url = {'title': f"{congress} (Official Target)", 'href': url}
+                    break
             
+            # 2. If no known target, Search using hints
+            if not found_url:
+                try:
+                    # Queries based on "Locating the Archive" instructions
+                    queries = [
+                        f'{congress} 2024 {hint}',
+                        f'{congress} 2024 scientific sessions abstracts',
+                        f'{congress} 2024 journal supplement'
+                    ]
+                    for q in queries:
+                        results = list(self.ddgs.text(q, max_results=2))
+                        for res in results:
+                            u = res['href'].lower()
+                            # Look for keywords: abstract, program, supplement, pdf
+                            if any(x in u for x in ['pdf', 'program', 'abstract', 'supplement', 'journal']):
+                                found_url = res
+                                break
+                        if found_url: break
+                except: pass
+
             if found_url:
                 targeted_results.append({
                     "congress": congress,
-                    "type": item["type"],
                     "title": found_url['title'],
                     "url": found_url['href']
                 })
+        
         return targeted_results
 
-    # --- MODULE C: THE CODER (CLEAN - NO FAKE DATA) ---
-    def module_c_coder(self, url, congress_name):
+    # --- MODULE B: THE CODER (Script Generation) ---
+    def module_b_coder(self, url, congress_name):
         try:
-            # 1. FETCH CONTENT
+            # 1. DETECT PDF VS HTML
             headers = {'User-Agent': 'Mozilla/5.0'}
             content_type = ""
-            raw_text = ""
             is_pdf = False
             
-            try:
-                head = requests.head(url, headers=headers, timeout=5, allow_redirects=True)
-                content_type = head.headers.get('Content-Type', '').lower()
-            except: pass
-
-            # Attempt to download PDF or HTML
-            if 'application/pdf' in content_type or url.lower().endswith('.pdf'):
+            if url.lower().endswith('.pdf'):
                 is_pdf = True
+            else:
                 try:
+                    head = requests.head(url, headers=headers, timeout=5, allow_redirects=True)
+                    content_type = head.headers.get('Content-Type', '').lower()
+                    if 'application/pdf' in content_type:
+                        is_pdf = True
+                except: pass
+
+            # 2. FETCH CONTENT (DOM or TEXT)
+            raw_text = ""
+            try:
+                if is_pdf:
                     response = requests.get(url, headers=headers, timeout=15)
                     f = io.BytesIO(response.content)
                     reader = PdfReader(f)
-                    # Read first 3 pages
+                    # Read first 3 pages for structure analysis
                     raw_text = "\n".join([p.extract_text() for p in reader.pages[:3]])
-                except: pass
-            else:
-                downloaded = trafilatura.fetch_url(url)
-                if downloaded:
-                    raw_text = trafilatura.extract(downloaded) or ""
+                else:
+                    # For HTML, we need the DOM structure, but trafilatura gives text.
+                    # We will try to fetch raw HTML for the prompt context if possible,
+                    # otherwise fallback to text. 
+                    downloaded = trafilatura.fetch_url(url)
+                    if downloaded:
+                        raw_text = trafilatura.extract(downloaded) or ""
+            except Exception as e:
+                return {"error": f"Connection Error: {str(e)}"}
 
-            # IF CONTENT IS EMPTY -> RETURN ERROR (Do not fake it)
-            if not raw_text or len(raw_text) < 50:
-                return {"error": "Access Denied: The website blocked the automated scraper."}
+            # VALIDATION: If blocked
+            if not raw_text or len(raw_text) < 100:
+                return {"error": "Access Denied: Website blocked the scraper or is empty."}
 
-            # 2. GENERATE SCRIPT (Only if we have real text)
+            # 3. GENERATE SCRIPT (With Strict CSV Schema)
             system_prompt = "You are a Senior Python Developer."
             user_prompt = f"""
-            Task: Generate a Python script to scrape abstract data.
+            Task: Generate a Python script to parse congress abstracts.
             
-            CONTEXT:
+            INPUT CONTEXT:
             - Congress: {congress_name}
             - URL: {url}
-            - Format: {'PDF' if is_pdf else 'HTML'}
+            - Type: {'PDF Document' if is_pdf else 'HTML Page'}
             
-            CONTENT PREVIEW:
-            {raw_text[:8000]}
+            CONTENT PREVIEW (To identify structure/tags):
+            {raw_text[:5000]}
             
-            REQUIREMENTS:
-            1. Write a Python script using 'BeautifulSoup' (if HTML) or 'pypdf' (if PDF).
-            2. The script must extract: Congress Name, Date, Title, Authors, Body.
-            3. Also extract 1 sample abstract from the content preview provided above.
+            STRICT REQUIREMENTS:
+            1. Generate a Python script using 'BeautifulSoup' (if HTML) or 'pypdf' (if PDF).
+            2. The script MUST output a CSV file named 'abstracts.csv'.
+            3. The CSV MUST have exactly these headers (Data Dictionary):
+               - congress_name
+               - date
+               - title
+               - authors
+               - body
+            
+            4. Based on the CONTENT PREVIEW, write the specific logic to find the title/authors/body.
             
             Return JSON:
             {{
