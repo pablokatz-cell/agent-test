@@ -28,58 +28,30 @@ class MedicalCongressAgent:
 
         self.ddgs = DDGS()
 
-    # --- MODULE A: THE STRATEGIST ---
-    # Identifies exactly 4 key congresses (2 High Impact, 2 Specialty) [cite: 6, 10, 11]
+    # --- MODULE A: THE STRATEGIST (HARDCODED FOR DEMO) ---
     def module_a_strategist(self, disease_area):
-        if not self.client: return []
-        
-        system_prompt = "You are a Senior Medical Researcher. Return ONLY valid JSON."
-        user_prompt = f"""
-        For the disease area '{disease_area}', identify exactly 4 congresses.
-        
-        1. Category A (High-Impact): The 2 largest, most influential general societies (e.g. longstanding, >5000 attendees).
-        2. Category B (Specialty): The 2 most relevant niche conferences focusing on trials or specific pathology.
-        
-        Return a JSON object with this exact structure:
-        {{
-            "high_impact": ["Congress Name 1 (Acronym)", "Congress Name 2 (Acronym)"],
-            "specialty": ["Congress Name 3 (Acronym)", "Congress Name 4 (Acronym)"]
-        }}
         """
-        
-        try:
-            response = self.client.chat.completions.create(
-                model="gemini-2.5-pro",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                response_format={"type": "json_object"},
-                stream=False
-            )
-            data = json.loads(response.choices[0].message.content)
-            # Flatten the list for the navigator
-            return [
-                {"name": name, "type": "High Impact"} for name in data.get("high_impact", [])
-            ] + [
-                {"name": name, "type": "Specialty"} for name in data.get("specialty", [])
-            ]
-        except Exception as e:
-            print(f"Strategist Error: {e}")
-            return []
+        Returns the specific Alzheimer's congresses requested.
+        Ignores the 'disease_area' input for this example.
+        """
+        return [
+            {"name": "AAIC (Alzheimer's Association International Conference)", "type": "High Impact"},
+            {"name": "AAN (American Academy of Neurology)", "type": "High Impact"},
+            {"name": "AD/PD (Intl Conf on Alzheimer's & Parkinson's)", "type": "Specialty"},
+            {"name": "CTAD (Clinical Trials on Alzheimer's)", "type": "Specialty"}
+        ]
 
     # --- MODULE B: THE NAVIGATOR ---
-    # Finds specific 'Abstracts' or 'Scientific Program' URLs for the past year [cite: 18, 19, 42]
     def module_b_navigator(self, congress_list):
         targeted_results = []
         
         for item in congress_list:
             congress = item["name"]
-            # Queries specifically looking for data sources (journals, archives, programs) [cite: 43-46]
+            # We search specifically for 2024/2025 abstracts
             queries = [
                 f'{congress} 2024 scientific program abstracts',
                 f'{congress} 2024 journal supplement',
-                f'{congress} annual meeting abstract archive'
+                f'{congress} 2025 abstract archive'
             ]
             
             found_url = None
@@ -90,7 +62,7 @@ class MedicalCongressAgent:
                         u = res['href'].lower()
                         t = res['title'].lower()
                         
-                        # "Green Flags" that indicate this is a data source
+                        # "Green Flags" for data sources
                         if any(x in u or x in t for x in ['abstract', 'program', 'supplement', 'schedule', 'agenda', 'pdf']):
                             found_url = res
                             break
@@ -108,7 +80,6 @@ class MedicalCongressAgent:
         return targeted_results
 
     # --- MODULE C: THE CODER ---
-    # Scrapes the structure and writes a Python script [cite: 28, 29, 31-33]
     def module_c_coder(self, url, congress_name):
         try:
             # 1. FETCH CONTENT
@@ -127,7 +98,6 @@ class MedicalCongressAgent:
                 response = requests.get(url, headers=headers, timeout=15)
                 f = io.BytesIO(response.content)
                 reader = PdfReader(f)
-                # Read first few pages to understand structure
                 raw_text = "\n".join([p.extract_text() for p in reader.pages[:4]])
             else:
                 downloaded = trafilatura.fetch_url(url)
