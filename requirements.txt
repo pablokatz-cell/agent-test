@@ -4,4 +4,4 @@ duckduckgo-search
 trafilatura
 beautifulsoup4
 requests
-pypdf
+pypdf# force update 1
