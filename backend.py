@@ -11,28 +11,30 @@ import json
 
 class MedicalCongressAgent:
     def __init__(self):
-        # --- ROCHE GATEWAY CONFIGURATION ---
-        try:
-            self.PORTKEY_KEY = st.secrets["PORTKEY_API_KEY"]
-        except:
-            self.PORTKEY_KEY = "PASTE_YOUR_ROCHE_KEY_HERE"
+        # --- ROCHE GATEWAY CONFIGURATION (UPDATED) ---
+        # 1. NEW API KEY
+        self.PORTKEY_KEY = "H9nb7pQK5OU0SwIZUyPs1QFxOJJ1"
+        
+        # Check if key is in secrets, otherwise use the hardcoded one above
+        if "PORTKEY_API_KEY" in st.secrets:
+             self.PORTKEY_KEY = st.secrets["PORTKEY_API_KEY"]
 
-        if "PASTE" not in self.PORTKEY_KEY:
-            self.client = OpenAI(
-                api_key=self.PORTKEY_KEY,
-                base_url="https://eu.aigw.galileo.roche.com/v1",
-                timeout=300.0
-            )
-        else:
-            self.client = None
+        # 2. NEW US ENDPOINT
+        self.client = OpenAI(
+            api_key=self.PORTKEY_KEY,
+            base_url="https://us.aigw.galileo.roche.com/v1", # <--- Switched to US Gateway
+            timeout=300.0
+        )
+
+        # 3. NEW MODEL ID
+        self.MODEL_ID = "@org-gcp-general-us-central1/gemini-2.5-flash-lite"
 
         self.ddgs = DDGS()
 
-    # --- MODULE A: THE STRATEGIST (HARDCODED FOR DEMO) ---
+    # --- MODULE A: THE STRATEGIST ---
     def module_a_strategist(self, disease_area):
         """
-        Returns the specific Alzheimer's congresses requested.
-        Ignores the 'disease_area' input for this example.
+        Returns the specific Alzheimer's congresses (Hardcoded for demo).
         """
         return [
             {"name": "AAIC (Alzheimer's Association International Conference)", "type": "High Impact"},
@@ -47,7 +49,7 @@ class MedicalCongressAgent:
         
         for item in congress_list:
             congress = item["name"]
-            # We search specifically for 2024/2025 abstracts
+            # Search specifically for 2024/2025 abstracts
             queries = [
                 f'{congress} 2024 scientific program abstracts',
                 f'{congress} 2024 journal supplement',
@@ -62,7 +64,6 @@ class MedicalCongressAgent:
                         u = res['href'].lower()
                         t = res['title'].lower()
                         
-                        # "Green Flags" for data sources
                         if any(x in u or x in t for x in ['abstract', 'program', 'supplement', 'schedule', 'agenda', 'pdf']):
                             found_url = res
                             break
@@ -122,7 +123,7 @@ class MedicalCongressAgent:
             REQUIREMENTS:
             1. Write a Python script using 'BeautifulSoup' (if HTML) or 'pypdf' (if PDF).
             2. The script must extract: Congress Name, Date, Title, Authors, Body.
-            3. Also extract 1 sample abstract from the content preview provided above to prove it works.
+            3. Also extract 1 sample abstract from the content preview provided above.
             
             Return JSON:
             {{
@@ -132,7 +133,7 @@ class MedicalCongressAgent:
             """
 
             response = self.client.chat.completions.create(
-                model="gemini-2.5-pro",
+                model=self.MODEL_ID,  # <--- USES THE NEW FLASH LITE MODEL
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
