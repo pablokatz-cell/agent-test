@@ -1,8 +1,7 @@
 streamlit
-openai
+openai>=1.0.0
 duckduckgo-search
 trafilatura
 beautifulsoup4
 requests
-pypdf# force update 1
-# force update 1
+pypdf
