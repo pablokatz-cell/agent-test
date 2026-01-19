@@ -24,45 +24,29 @@ class MedicalCongressAgent:
         self.MODEL_ID = "@org-gcp-general-us-central1/gemini-2.5-flash-lite"
         self.ddgs = DDGS()
 
-    # --- USER INPUT STEP (Predefined Congresses) ---
+    # --- USER INPUT MAPPING ---
     def get_predefined_congresses(self, disease_area):
-        """
-        Maps the user input to the 3 predefined congresses requested in the spec.
-        Includes specific search hints for the Navigator.
-        """
         if "alzheimer" in disease_area.lower():
             return [
-                {
-                    "name": "AAIC (Alzheimer's Association International Conference)", 
-                    "hint": "Alzheimer’s & Dementia Supplementary Issues Podium abstracts"
-                },
-                {
-                    "name": "AAN (American Academy of Neurology Annual Meeting)", 
-                    "hint": "Neurology Supplement Issues"
-                },
-                {
-                    "name": "CTAD (Clinical Trials on Alzheimer's Disease)", 
-                    "hint": "Journal of Prevention of Alzheimer’s Disease"
-                }
+                {"name": "AAIC (Alzheimer's Association International Conference)"},
+                {"name": "AAN (American Academy of Neurology Annual Meeting)"},
+                {"name": "CTAD (Clinical Trials on Alzheimer's Disease)"}
             ]
-        # Fallback for other queries
-        return [{"name": f"{disease_area} Congress", "hint": "Scientific Program"}]
+        return [{"name": f"{disease_area} Congress"}]
 
-    # --- MODULE A: THE NAVIGATOR (Search & Location) ---
+    # --- MODULE A: THE NAVIGATOR ---
     def module_a_navigator(self, congress_list):
         targeted_results = []
         
-        # TARGET URLs (From Validation Workflow Spec)
-        # We prioritize these URLs. If not found, we search.
+        # EXACT URLs PROVIDED BY USER
         known_targets = {
-            "AAIC": "https://alz.org/aaic/scientific-program.asp",
-            "CTAD": "https://www.ctad-alzheimer.com/files/files/CTAD2024_Abstracts.pdf", # PDF Detection Test
-            "AAN": "https://www.aan.com/events/annual-meeting"
+            "AAIC": "https://aaic.alz.org/abstracts/abstracts-archive.asp",
+            "AAN": "https://www.neurology.org/toc/wnl/104/7_Supplement_1",
+            "CTAD": "https://www.sciencedirect.com/science/article/pii/S2274580724006368?via%3Dihub"
         }
 
         for item in congress_list:
             congress = item["name"]
-            hint = item.get("hint", "")
             found_url = None
             
             # 1. Check Known Targets first
@@ -71,24 +55,15 @@ class MedicalCongressAgent:
                     found_url = {'title': f"{congress} (Official Target)", 'href': url}
                     break
             
-            # 2. If no known target, Search using hints
+            # 2. Fallback search (only if new congresses are added later)
             if not found_url:
                 try:
-                    # Queries based on "Locating the Archive" instructions
-                    queries = [
-                        f'{congress} 2024 {hint}',
-                        f'{congress} 2024 scientific sessions abstracts',
-                        f'{congress} 2024 journal supplement'
-                    ]
+                    queries = [f'{congress} 2024 scientific program abstracts']
                     for q in queries:
-                        results = list(self.ddgs.text(q, max_results=2))
-                        for res in results:
-                            u = res['href'].lower()
-                            # Look for keywords: abstract, program, supplement, pdf
-                            if any(x in u for x in ['pdf', 'program', 'abstract', 'supplement', 'journal']):
-                                found_url = res
-                                break
-                        if found_url: break
+                        results = list(self.ddgs.text(q, max_results=1))
+                        if results:
+                            found_url = results[0]
+                            break
                 except: pass
 
             if found_url:
@@ -100,71 +75,76 @@ class MedicalCongressAgent:
         
         return targeted_results
 
-    # --- MODULE B: THE CODER (Script Generation) ---
+    # --- MODULE B: THE CODER ---
     def module_b_coder(self, url, congress_name):
         try:
-            # 1. DETECT PDF VS HTML
-            headers = {'User-Agent': 'Mozilla/5.0'}
+            # 1. FETCH CONTENT (With Robust Headers for ScienceDirect/Neurology.org)
+            # These sites are strict, so we mimic a real Chrome browser.
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+            }
+            
             content_type = ""
             is_pdf = False
-            
+            raw_text = ""
+
+            # Detect PDF via URL extension first
             if url.lower().endswith('.pdf'):
                 is_pdf = True
-            else:
-                try:
-                    head = requests.head(url, headers=headers, timeout=5, allow_redirects=True)
-                    content_type = head.headers.get('Content-Type', '').lower()
-                    if 'application/pdf' in content_type:
-                        is_pdf = True
-                except: pass
+            
+            try:
+                # First HEAD request to check type
+                head = requests.head(url, headers=headers, timeout=5, allow_redirects=True)
+                content_type = head.headers.get('Content-Type', '').lower()
+                if 'application/pdf' in content_type:
+                    is_pdf = True
+            except: pass
 
-            # 2. FETCH CONTENT (DOM or TEXT)
-            raw_text = ""
             try:
                 if is_pdf:
                     response = requests.get(url, headers=headers, timeout=15)
                     f = io.BytesIO(response.content)
                     reader = PdfReader(f)
-                    # Read first 3 pages for structure analysis
-                    raw_text = "\n".join([p.extract_text() for p in reader.pages[:3]])
+                    raw_text = "\n".join([p.extract_text() for p in reader.pages[:4]])
                 else:
-                    # For HTML, we need the DOM structure, but trafilatura gives text.
-                    # We will try to fetch raw HTML for the prompt context if possible,
-                    # otherwise fallback to text. 
+                    # For strict HTML sites (ScienceDirect), trafilatura is often safer than requests
                     downloaded = trafilatura.fetch_url(url)
                     if downloaded:
                         raw_text = trafilatura.extract(downloaded) or ""
+                    
+                    # Fallback: If trafilatura fails, try requests text
+                    if not raw_text or len(raw_text) < 100:
+                        resp = requests.get(url, headers=headers, timeout=10)
+                        if resp.status_code == 200:
+                            # We send a chunk of raw HTML so the LLM can see the class names
+                            raw_text = resp.text[:15000] 
             except Exception as e:
                 return {"error": f"Connection Error: {str(e)}"}
 
-            # VALIDATION: If blocked
+            # STRICT VALIDATION
             if not raw_text or len(raw_text) < 100:
-                return {"error": "Access Denied: Website blocked the scraper or is empty."}
+                return {"error": "Access Denied: The website blocked the scraper. (ScienceDirect/Neurology often require Selenium)"}
 
-            # 3. GENERATE SCRIPT (With Strict CSV Schema)
+            # 2. GENERATE SCRIPT
             system_prompt = "You are a Senior Python Developer."
             user_prompt = f"""
-            Task: Generate a Python script to parse congress abstracts.
+            Task: Generate a Python script to parse congress abstracts from this specific page.
             
             INPUT CONTEXT:
             - Congress: {congress_name}
             - URL: {url}
             - Type: {'PDF Document' if is_pdf else 'HTML Page'}
             
-            CONTENT PREVIEW (To identify structure/tags):
-            {raw_text[:5000]}
+            CONTENT PREVIEW (First 10k chars):
+            {raw_text[:10000]}
             
             STRICT REQUIREMENTS:
-            1. Generate a Python script using 'BeautifulSoup' (if HTML) or 'pypdf' (if PDF).
+            1. Generate a Python script using 'BeautifulSoup' (HTML) or 'pypdf' (PDF).
             2. The script MUST output a CSV file named 'abstracts.csv'.
-            3. The CSV MUST have exactly these headers (Data Dictionary):
-               - congress_name
-               - date
-               - title
-               - authors
-               - body
-            
-            4. Based on the CONTENT PREVIEW, write the specific logic to find the title/authors/body.
+            3. The CSV MUST have these columns: congress_name, date, title, authors, body.
+            4. Look at the CONTENT PREVIEW. If the page is a Table of Contents (like Neurology.org), write the script to extract the *links* to the abstracts. If it is the abstracts themselves, extract the text.
             
             Return JSON:
             {{
